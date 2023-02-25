@@ -6,3 +6,5 @@ so the build process on Windows is pretty simple, you just run [build.bat] and t
 on Linux though... im sorry
 
 the world right now is 512x64x512 so about 32x32 (1024) minecraft chunks
+
+it might take a while for the world to load, but it should work i think
