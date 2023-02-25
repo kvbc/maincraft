@@ -4,6 +4,7 @@
 #include <glad/glad.h>
 #include <cglm/cglm.h>
 #include <stb_image.h>
+#include <FastNoiseLite.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -24,11 +25,7 @@
 #define MC_GLANYERR()      ( glGetError() != GL_NO_ERROR )
 
 #define MC_MAX(a,b) ( ((a) > (b)) ? (a) : (b) )
-
-#define MC_BLOCK_VERTICES (6 * 6)
-#define MC_TEXT_VERTICES  (6)
-
-#define MC_WORLD_VERTICES (MC_WORLD_DATA / sizeof(struct mc_BlockVertex))
+#define MC_MIN(a,b) ( ((a) < (b)) ? (a) : (b) )
 
 enum mc_Status {
 	MC_BAD = 0,
@@ -40,29 +37,29 @@ struct mc_CrosshairVertex {
 	float tx, ty; // texture coords
 };
 
-struct mc_BlockVertex {
-	float x, y, z;
-	float tx, ty; // texture coords
-	float a; // alpha
-    float type;
-};
-
-enum mc_BlockType {
-    MC_BLOCK_TYPE_GRASS = 0
-};
-
-struct mc_Block {
-	size_t vertofs;
-	ivec3 pos;
-	ivec3 sz;
-    enum mc_BlockType type;
-};
+/*
+ *
+ * File
+ * 
+ */
 
 enum mc_Status mc_file_read (const char* fn, char** buffPtr);
+
+/*
+ *
+ * Program
+ * 
+ */
 
 GLuint mc_program_create (const char *name, const char *vertPath, const char *fragPath);
 void mc_program_delete (GLuint ID);
 void mc_program_set_int  (GLuint ID, const char *name, GLint x);
+
+/*
+ *
+ * Camera
+ * 
+ */
 
 struct mc_Camera {
 	vec3 pos;
@@ -74,20 +71,81 @@ void mc_camera_init 	  (struct mc_Camera *cam);
 void mc_camera_mousemov   (struct mc_Camera *cam, float ofsx, float ofsy);
 void mc_camera_viewmatrix (struct mc_Camera *cam, mat4 dest);
 
-struct mc_World {
-	GLuint VAO, VBO, EBO;
-	size_t blockvc; // vertices count
-	struct mc_Block blocks[MC_WORLD_CPU_MAX_BLOCKS];
-	size_t blockstop;
+/*
+ *
+ * Block
+ * World
+ * 
+ */
+
+#define MC_BLOCK_FACES           (6)
+#define MC_BLOCK_FACE_VERTICES   (6)
+#define MC_BLOCK_VERTICES        (MC_BLOCK_FACES * MC_BLOCK_FACE_VERTICES)
+#define MC_BLOCK_VERTEX_ELEMENTS (sizeof(struct mc_BlockVertex) / sizeof(float))
+
+struct mc_BlockVertex {
+	float x, y, z;
+    float tx, ty; // texture coords
+	float a; // alpha
 };
 
-void mc_world_init (struct mc_World *wd);
-void mc_world_free (struct mc_World *wd);
-void mc_world_draw (struct mc_World *wd, GLint vertofs, GLsizei vertsz);
-void mc_world_set_union  (struct mc_World *wd, GLintptr vertofs, enum mc_BlockType type, int x, int y, int z, int w, int h, int d, float a);
-void mc_world_set_block  (struct mc_World *wd, GLintptr vertofs, enum mc_BlockType type, int x, int y, int z, float a);
-void mc_world_push_block (struct mc_World *wd, enum mc_BlockType type, int x, int y, int z, float a);
-void mc_world_push_union (struct mc_World *wd, enum mc_BlockType type, int x, int y, int z, int w, int h, int d, float a);
+enum mc_BlockType {
+    MC_BLOCK_TYPE_NONE,
+    MC_BLOCK_TYPE_AIR,
+    MC_BLOCK_TYPE_GRASS
+};
+
+struct mc_Block {
+    MC_BOOL exists;
+    size_t face_idx_left;
+    size_t face_idx_right;
+    size_t face_idx_top;
+    size_t face_idx_bottom;
+    size_t face_idx_front;
+    size_t face_idx_back;
+    enum mc_BlockType type;
+};
+
+int mc_block_coord (float xyz);
+
+/*
+ *
+ * World
+ * 
+ */
+
+#define MC_WORLD_MAX_BLOCKS (MC_RENDER_DISTANCE * MC_RENDER_DISTANCE * MC_WORLD_HEIGHT)
+#define MC_WORLD_MAX_FACES (MC_WORLD_MAX_BLOCKS * MC_BLOCK_FACES)
+#define MC_WORLD_MAX_VERTICES (MC_WORLD_MAX_BLOCKS * MC_BLOCK_VERTICES)
+
+struct mc_World {
+	GLuint VAO, VBO;
+    ivec3 offset;
+	struct mc_Block * blocks;
+    fnl_state fnl;
+
+    GLintptr face_indices_top;
+    GLintptr * free_face_indices;
+    GLintptr free_face_indices_top;
+};
+
+void mc_world_init (struct mc_World * wd, size_t reserved_blocks_count);
+void mc_world_free (struct mc_World * wd);
+void mc_world_draw (struct mc_World * wd, GLint block_index, GLsizei block_count);
+
+void             mc_world_move                 (struct mc_World * wd, int x, int y, int z);
+struct mc_Block* mc_world_block_at             (struct mc_World * wd, int x, int y, int z);
+void             mc_world_destroy_block_at     (struct mc_World * wd, int x, int y, int z);
+void             mc_world_place_block_at       (struct mc_World * wd, int x, int y, int z, enum mc_BlockType type);
+
+void             mc_world_destroy_block_at_idx (struct mc_World * wd, int ix, int iy, int iz, int x, int y, int z);
+void             mc_world_place_block_at_idx   (struct mc_World * wd, int ix, int iy, int iz, int x, int y, int z, enum mc_BlockType type);
+
+/*
+ *
+ * Texture
+ * 
+ */
 
 struct mc_Texture {
     GLenum intfrmt; // internal format
@@ -102,25 +160,30 @@ enum mc_Status mc_tex_create (struct mc_Texture *tex, const char *fn);
 enum mc_Status mc_tex_load (struct mc_Texture *tex, const char *fn);
 void mc_tex_unload (struct mc_Texture *tex);
 
+/*
+ *
+ * Text
+ * 
+ */
+
+#define MC_TEXT_VERTICES          (6)
+#define MC_TEXT_VERTEX_ELEMENTS   (sizeof(struct mc_TextVertex) / sizeof(float))
+#define MC_TEXT_ATLAS_CHAR_WIDTH  (1. / MC_TEXT_ATLAS_COLS) // 0 .. 1
+#define MC_TEXT_ATLAS_CHAR_HEIGHT (1. / MC_TEXT_ATLAS_ROWS) // 0 .. 1
+#define MC_TEXT_CHAR_WIDTH        (1. / MC_TEXT_MAX_CHARS)
+#define MC_TEXT_CHAR_HEIGHT       (MC_TEXT_ATLAS_CHAR_WIDTH / MC_TEXT_ATLAS_CHAR_HEIGHT * MC_TEXT_CHAR_WIDTH)
+
 struct mc_TextVertex {
     float x, y;
     float tx, ty; // texture coords
 };
 struct mc_TextRenderer {
     GLuint VAO, VBO, prog;
-    int totallen;
-    struct mc_TextVertex *tmpvert;
-    size_t tmpvertcap;
     struct mc_Texture font;
 };
-enum mc_Status mc_textr_create (struct mc_TextRenderer *text);
-void mc_textr_push (struct mc_TextRenderer *text, float x, float y, const char *src);
-void mc_textr_draw (struct mc_TextRenderer *text);
-void mc_textr_destroy (struct mc_TextRenderer *text);
 
-void mc_vec3_set  (vec3 v, float x, float y, float z);
-void mc_vec4_set  (vec4 v, float x, float y, float z, float w);
-void mc_ivec3_set (ivec3 v, int x, int y, int z);
-void mc_ivec4_set (ivec4 v, int x, int y, int z, int w);
+void mc_textr_create  (struct mc_TextRenderer *textr);
+void mc_textr_draw    (struct mc_TextRenderer *textr, float x, float y, const char * src);
+void mc_textr_destroy (struct mc_TextRenderer *textr);
 
 #endif // MC_H

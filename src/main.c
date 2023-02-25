@@ -2,6 +2,7 @@
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <FastNoiseLite.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,23 +43,18 @@ static struct {
         char pos[MC_TEXT_MAX_CHARS];
         char look[MC_TEXT_MAX_CHARS];
         char block[MC_TEXT_MAX_CHARS];
-        char blocks_in_reach[MC_TEXT_MAX_CHARS];
-        char blocks_in_world[MC_TEXT_MAX_CHARS];
+        char offset[MC_TEXT_MAX_CHARS];
+        char vertices[MC_TEXT_MAX_CHARS];
+        char mem_vertices[MC_TEXT_MAX_CHARS];
+        char mem_blocks[MC_TEXT_MAX_CHARS];
+        char mem_total[MC_TEXT_MAX_CHARS];
     } txt;
 
     struct mc_TextRenderer textr;
     
     vec3 rayhitpos;
     vec3 rayprehitpos;
-    size_t destroyed_blocks_top;
-    struct mc_Block *destroyed_blocks_queue[MC_DESTROYED_BLOCKS_QUEUE_MAX];
-    size_t blocks_in_reach_top;
-} G = {
-    .mouse.last_x = 0.0,
-    .mouse.last_y = 0.0,
-    .mouse.moved = MC_TRUE,
-    .destroyed_blocks_top = 0
-};
+} G = {0};
 
 /*
  *
@@ -66,107 +62,35 @@ static struct {
  * 
  */
 
-// real to block coordinates
-static inline int blockpos (float xyz) {
-	return (int)floorf(xyz / MC_BLOCK_SIZE);
-}
-
-// mark the block as destroyed
-static inline void block_destroy (struct mc_Block *block) {
-	block->sz[0] = -1;
-}
-
-static inline MC_BOOL block_isdestroyed (struct mc_Block *block) {
-	return block->sz[0] < 0;
-}
-
-static inline MC_BOOL block_isunion (struct mc_Block *block) {
-	return
-	(block->sz[0] > 1) ||
-	(block->sz[1] > 1) ||
-	(block->sz[2] > 1);
-}
-
 static struct mc_Block* hit_block_in_reach (void) {
-	G.blocks_in_reach_top = 0;
-	static struct mc_Block *blocks_in_reach[MC_REACH * MC_REACH * MC_REACH * 10]; // FIXME
-
-	G.destroyed_blocks_top = 0;
-	for (size_t i = 0; i < G.world.blockstop; i++) {
-		struct mc_Block *block = &G.world.blocks[i];
-
-		if (block_isdestroyed(block)) {
-			if (G.destroyed_blocks_top < MC_DESTROYED_BLOCKS_QUEUE_MAX)
-				G.destroyed_blocks_queue[G.destroyed_blocks_top++] = block;
-			continue;
-		}
-
-		/*
-		* Rather than iterate through every block in the world,
-		* find out which blocks are within player's reach and later on iterate through those
-		*/
-		if (blockpos(G.camera.pos[0]) > block->pos[0] - MC_REACH)
-		if (blockpos(G.camera.pos[1]) > block->pos[1] - MC_REACH)
-		if (blockpos(G.camera.pos[2]) > block->pos[2] - MC_REACH)
-		if (blockpos(G.camera.pos[0]) < block->pos[0] + MC_MAX(block->sz[0], MC_REACH) + MC_REACH)
-		if (blockpos(G.camera.pos[1]) < block->pos[1] + MC_MAX(block->sz[1], MC_REACH) + MC_REACH)
-		if (blockpos(G.camera.pos[2]) < block->pos[2] + MC_MAX(block->sz[2], MC_REACH) + MC_REACH)
-			blocks_in_reach[G.blocks_in_reach_top++] = block;
-	}
-
 	// Standard unoptimized ray marching
-	struct mc_Block *block_hit;
 	glm_vec3_copy(G.camera.pos, G.rayhitpos);
 	for (size_t r = 0; r < MC_REACH / MC_RAY_PRECISION; r++) {
-		block_hit = NULL;
-		for (size_t i = 0; i < G.blocks_in_reach_top; i++) {
-			struct mc_Block *block = blocks_in_reach[i];
-			if (blockpos(G.rayhitpos[0]) >= block->pos[0])
-			if (blockpos(G.rayhitpos[1]) >= block->pos[1])
-			if (blockpos(G.rayhitpos[2]) >= block->pos[2])
-			if (blockpos(G.rayhitpos[0]) <  block->pos[0] + block->sz[0])
-			if (blockpos(G.rayhitpos[1]) <  block->pos[1] + block->sz[1])
-			if (blockpos(G.rayhitpos[2]) <  block->pos[2] + block->sz[2]) {
-				block_hit = block;
-				break;
-			}
-		}
-		if (block_hit == NULL) { // step
-			G.rayhitpos[0] += G.camera.front[0] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
-			G.rayhitpos[1] += G.camera.front[1] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
-			G.rayhitpos[2] += G.camera.front[2] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
-		} else { // revert last step
-			G.rayprehitpos[0] = G.rayhitpos[0] - G.camera.front[0] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
-			G.rayprehitpos[1] = G.rayhitpos[1] - G.camera.front[1] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
-			G.rayprehitpos[2] = G.rayhitpos[2] - G.camera.front[2] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
-			break;
-		}
+        for (int x = mc_block_coord(G.camera.pos[0]) - MC_REACH; x < mc_block_coord(G.camera.pos[0]) + MC_REACH; x++)
+        for (int y = mc_block_coord(G.camera.pos[1]) - MC_REACH; y < mc_block_coord(G.camera.pos[1]) + MC_REACH; y++)
+        for (int z = mc_block_coord(G.camera.pos[2]) - MC_REACH; z < mc_block_coord(G.camera.pos[2]) + MC_REACH; z++) {
+            struct mc_Block *block = mc_world_block_at(&G.world, x, y, z);
+            if (block == NULL)
+                continue;
+            if (!block->exists)
+                continue;
+
+            if (mc_block_coord(G.rayhitpos[0]) == x)
+            if (mc_block_coord(G.rayhitpos[1]) == y)
+            if (mc_block_coord(G.rayhitpos[2]) == z) {
+                // revert last step
+                G.rayprehitpos[0] = G.rayhitpos[0] - G.camera.front[0] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
+                G.rayprehitpos[1] = G.rayhitpos[1] - G.camera.front[1] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
+                G.rayprehitpos[2] = G.rayhitpos[2] - G.camera.front[2] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
+                return block;
+            }
+        }
+        // step
+        G.rayhitpos[0] += G.camera.front[0] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
+        G.rayhitpos[1] += G.camera.front[1] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
+        G.rayhitpos[2] += G.camera.front[2] * MC_BLOCK_SIZE * MC_RAY_PRECISION;
 	}
-
-	return block_hit;
-}
-
-static void place_union (enum mc_BlockType type, int x, int y, int z, int w, int h, int d) {
-	if (G.destroyed_blocks_top == 0) {
-		mc_world_push_union(&G.world, type, x, y, z, w, h, d, 1.0f);
-	} else {
-		struct mc_Block *block = G.destroyed_blocks_queue[--G.destroyed_blocks_top];
-		mc_world_set_union(&G.world, block->vertofs, type, x, y, z, w, h, d, 1.0f);
-		mc_ivec3_set(block->pos, x, y, z);
-		mc_ivec3_set(block->sz, w, h, d);
-	}
-}
-
-static inline void place_block (enum mc_BlockType type, int x, int y, int z) {
-	place_union(type, x, y, z, 1, 1, 1);
-}
-
-static void deunion_around_block (struct mc_Block *un, int x, int y, int z) {
-	if (x != un->pos[0])          			place_union(un->type, un->pos[0], un->pos[1], un->pos[2], x - un->pos[0], un->sz[1], un->sz[2]);
-	if (x != un->pos[0] + un->sz[0] - 1) 	place_union(un->type, x + 1, un->pos[1], un->pos[2], (un->pos[0] + un->sz[0] - 1) - x, un->sz[1], un->sz[2]);
-	if (z != un->pos[2])					place_union(un->type, x, un->pos[1], un->pos[2], 1, un->sz[1], z - un->pos[2]);
-	if (z != un->pos[2] + un->sz[2] - 1)	place_union(un->type, x, un->pos[1], z + 1, 1, un->sz[1], (un->pos[2] + un->sz[2] - 1) - z);
-	if (un->sz[1] > 1)						place_union(un->type, x, un->pos[1], z, 1, un->sz[1] - 1, 1);
+	return NULL;
 }
 
 /*
@@ -210,15 +134,18 @@ int main (void) {
 		return EXIT_FAILURE;
 	}
 
-	glfwSwapInterval(1);
+	// glfwSwapInterval(0); // VSYNC
 	// glViewport(0, 0, MC_WINDOW_WIDTH, MC_WINDOW_HEIGHT);
 
     stbi_set_flip_vertically_on_load(1);
 
-    glEnable(GL_CULL_FACE);
+    // glEnable(GL_CULL_FACE);
 	glEnable(GL_DEPTH_TEST);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -260,27 +187,19 @@ int main (void) {
     /*
      *
      * Block Texture Atlas
-     * 2D Texture Array
      * 
      */
-    GLuint block_texatlas_2darray;
+    GLuint block_texatlas;
     {
         struct mc_Texture texatlas;
         mc_tex_load(&texatlas, "texatlas.jpg");
-        glGenTextures(1, &block_texatlas_2darray);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, block_texatlas_2darray);
-        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, texatlas.intfrmt, MC_BLOCKTEX_BLOCKSIZE, MC_BLOCKTEX_BLOCKSIZE, MC_BLOCKTEX_BLOCKS, 0, texatlas.datafrmt, GL_UNSIGNED_BYTE, NULL);
-        for (size_t i = 0; i < MC_BLOCKTEX_BLOCKS; i++) {
-            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
-                MC_BLOCKTEX_BLOCKSIZE, MC_BLOCKTEX_BLOCKSIZE, MC_BLOCKTEX_BLOCKS,
-                texatlas.datafrmt, GL_UNSIGNED_BYTE,
-                texatlas.data + i * MC_BLOCKTEX_BLOCKSIZE * MC_BLOCKTEX_BLOCKSIZE * texatlas.channels * sizeof(GLubyte)
-            );
-        }
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenTextures(1, &block_texatlas);
+        glBindTexture(GL_TEXTURE_2D, block_texatlas);
+        glTexImage2D(GL_TEXTURE_2D, 0, texatlas.intfrmt, MC_BLOCKTEX_BLOCKSIZE, MC_BLOCKTEX_BLOCKS * MC_BLOCKTEX_BLOCKSIZE, 0, texatlas.datafrmt, GL_UNSIGNED_BYTE, texatlas.data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         mc_tex_unload(&texatlas);
     }
 
@@ -310,94 +229,198 @@ int main (void) {
 	MC_BOOL player_moved = MC_FALSE;
 	mc_camera_init(&G.camera);
     mc_textr_create(&G.textr);
-	mc_world_init(&G.world);
+	mc_world_init(&G.world, 0);
+    G.mouse.moved = MC_TRUE;
+
+    MC_BOOL reset_indicator_block = MC_FALSE;
+
+    // glEnable(GL_CULL_FACE);
+    // glCullFace(GL_FRONT);
+    // glFrontFace(GL_CW);
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-	mc_world_push_block(&G.world, MC_BLOCK_TYPE_GRASS, 0, 0, 0, 0.0f);
-	mc_world_push_union(&G.world, MC_BLOCK_TYPE_GRASS, 0, 0, 0, 15, 1, 15, 1.0f);
+    // struct mc_Block indicator_block = {
+    //     .type = MC_BLOCK_TYPE_GRASS,
+    //     .vertofs_back  = MC_BLOCK_FACE_VERTICES * 0,
+    //     .vertofs_front = MC_BLOCK_FACE_VERTICES * 1,
+    //     .vertofs_top   = MC_BLOCK_FACE_VERTICES * 2,
+    //     .vertofs_bot   = MC_BLOCK_FACE_VERTICES * 3,
+    //     .vertofs_left  = MC_BLOCK_FACE_VERTICES * 4,
+    //     .vertofs_right = MC_BLOCK_FACE_VERTICES * 5
+    // };
+    // G.world.blockvc += MC_BLOCK_VERTICES;
+
+    /*
+     *
+     * Terrain Generation
+     * 
+     */
+    {
+        fnl_state fnl = fnlCreateState();
+        fnl.noise_type = FNL_NOISE_PERLIN;
+
+        for (int x = 0; x < MC_RENDER_DISTANCE; x++)
+        for (int z = 0; z < MC_RENDER_DISTANCE; z++)
+        for (int y = 0; y < MC_WORLD_HEIGHT;    y++) {
+            float noise = fnlGetNoise3D(&fnl, x, y, z);
+            if (noise > 0.0f)
+                mc_world_place_block_at(&G.world, x, y, z, MC_BLOCK_TYPE_GRASS);
+        }
+
+        // mc_world_place_block_at(&G.world, 0, 0, 0, MC_BLOCK_TYPE_GRASS);
+        // mc_world_place_block_at(&G.world, 1, 0, 0, MC_BLOCK_TYPE_GRASS);
+        // mc_world_place_block_at(&G.world, 2, 0, 0, MC_BLOCK_TYPE_GRASS);
+
+        // mc_world_update(&G.world);
+    }
+    // mc_world_place_block_at(&G.world, 0, 0, 0, MC_BLOCK_TYPE_GRASS);
+    // mc_update_vertices(&G.world);
+
+    // printf("%d, %d\n", G.world.vertices_top, G.world.indices_top);
+    // for (int i = 0; i < G.world.vertices_top; i++) {
+    //     printf("%f, ", G.world.vertices[i]);
+    // }
+    // puts("");
+    // for (int i = 0; i < MC_MIN(100, G.world.indices_top); i++) {
+    //     printf("%d, ", G.world.indices[i]);
+    // }
+    // puts("");
+
+    puts("done!");
+    glClearColor(0.67f, 0.84f, 1.0f, 1.0f);
+    double last_time = glfwGetTime();
+    size_t fps = 0;
 
 	while (!glfwWindowShouldClose(G.window)) {
+        fps++;
+        double cur_time = glfwGetTime();
+        if (cur_time - last_time >= 1.0) {
+            printf("fps: %d\n", fps);
+            fps = 0;
+            last_time = cur_time;
+        }
+        
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		     if (glfwGetKey(G.window, GLFW_KEY_A)          == GLFW_PRESS) glm_vec3_muladds(G.camera.right,  -MC_SPEED, G.camera.pos), player_moved = MC_TRUE;
-		else if (glfwGetKey(G.window, GLFW_KEY_D)          == GLFW_PRESS) glm_vec3_muladds(G.camera.right,   MC_SPEED, G.camera.pos), player_moved = MC_TRUE;
-			 if (glfwGetKey(G.window, GLFW_KEY_SPACE)      == GLFW_PRESS) glm_vec3_muladds((vec3){0,1,0},    MC_SPEED, G.camera.pos), player_moved = MC_TRUE;
-		else if (glfwGetKey(G.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) glm_vec3_muladds((vec3){0,1,0},   -MC_SPEED, G.camera.pos), player_moved = MC_TRUE;
-		     if (glfwGetKey(G.window, GLFW_KEY_W)          == GLFW_PRESS) glm_vec3_muladds(G.camera.front,   MC_SPEED, G.camera.pos), player_moved = MC_TRUE;
-		else if (glfwGetKey(G.window, GLFW_KEY_S)          == GLFW_PRESS) glm_vec3_muladds(G.camera.front,  -MC_SPEED, G.camera.pos), player_moved = MC_TRUE;
-		
-		if (player_moved || G.mouse.moved) {
-            glUseProgram(prog);
-			mc_camera_viewmatrix(&G.camera, view);
-			glUniformMatrix4fv(uView, 1, GL_FALSE, view);
-            if (player_moved)  player_moved  = MC_FALSE;
-            if (G.mouse.moved) G.mouse.moved = MC_FALSE;
-		}
-
-		if (!can_place_block)
-		if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE)
-			can_place_block = MC_TRUE;
-		if (!can_destroy_block)
-		if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE)
-			can_destroy_block = MC_TRUE;
-
-		if (glfwGetKey(G.window, GLFW_KEY_TAB) == GLFW_PRESS)
-			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-		else
-			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-		struct mc_Block *block_hit = hit_block_in_reach();
-		if (block_hit != NULL) {
-			mc_world_set_block(&G.world, 0,
-                MC_BLOCK_TYPE_GRASS,
-				blockpos(G.rayprehitpos[0]),
-				blockpos(G.rayprehitpos[1]),
-				blockpos(G.rayprehitpos[2]),
-				0.6f
-			);
-			if (can_place_block)
-			if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-				place_block(
-                    MC_BLOCK_TYPE_GRASS,
-					blockpos(G.rayprehitpos[0]),
-					blockpos(G.rayprehitpos[1]),
-					blockpos(G.rayprehitpos[2])
-				);
-				can_place_block = MC_FALSE;
-			}
-			if (can_destroy_block)
-			if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-				if (block_isunion(block_hit)) {
-					deunion_around_block(block_hit,
-						blockpos(G.rayhitpos[0]),
-						blockpos(G.rayhitpos[1]),
-						blockpos(G.rayhitpos[2])
-					);
-				}
-				mc_world_set_union(&G.world, block_hit->vertofs, MC_BLOCK_TYPE_GRASS, 0, 0, 0, 0, 0, 0, 0.0f);
-				block_destroy(block_hit);
-				can_destroy_block = MC_FALSE;
-			} 
-
-		}
-		else {
-			mc_world_set_block(&G.world, MC_BLOCK_TYPE_GRASS, 0, 0, 0, 0, 0.0f);
-		}
-
+        /*
+         *
+         * Input handling
+         * 
+         */
         {
-            snprintf(G.txt.pos, MC_TEXT_MAX_CHARS, "pos  %d %d %d (%.1f %.1f %.1f)", blockpos(G.camera.pos[0]), blockpos(G.camera.pos[1]), blockpos(G.camera.pos[2]), G.camera.pos[0], G.camera.pos[1], G.camera.pos[2]);
-            snprintf(G.txt.look, MC_TEXT_MAX_CHARS, "look %d %d %d", G.camera.front[0] < 0 ? -1 : 1, G.camera.front[1] < 0 ? -1 : 1, G.camera.front[2] < 0 ? -1 : 1);
-            if (block_hit != NULL)
-            snprintf(G.txt.block, MC_TEXT_MAX_CHARS, "block hit %d %d %d", blockpos(G.rayhitpos[0]), blockpos(G.rayhitpos[1]), blockpos(G.rayhitpos[2]));
-            snprintf(G.txt.blocks_in_reach, MC_TEXT_MAX_CHARS, "%u blocks in reach", G.blocks_in_reach_top);
-            snprintf(G.txt.blocks_in_world, MC_TEXT_MAX_CHARS, "%u blocks in world", G.world.blockstop);
-            mc_textr_push(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 0, G.txt.pos);
-            mc_textr_push(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 1, G.txt.look);
-            if (block_hit != NULL)
-            mc_textr_push(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 2, G.txt.block);
-            mc_textr_push(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 3, G.txt.blocks_in_reach);
-            mc_textr_push(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 4, G.txt.blocks_in_world);
+            float speed = MC_SPEED;
+            if (glfwGetKey(G.window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+                speed *= 5;
+
+                 if (glfwGetKey(G.window, GLFW_KEY_A)          == GLFW_PRESS) glm_vec3_muladds(G.camera.right,  -speed, G.camera.pos), player_moved = MC_TRUE;
+            else if (glfwGetKey(G.window, GLFW_KEY_D)          == GLFW_PRESS) glm_vec3_muladds(G.camera.right,   speed, G.camera.pos), player_moved = MC_TRUE;
+                 if (glfwGetKey(G.window, GLFW_KEY_SPACE)      == GLFW_PRESS) glm_vec3_muladds((vec3){0,1,0},    speed, G.camera.pos), player_moved = MC_TRUE;
+            else if (glfwGetKey(G.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) glm_vec3_muladds((vec3){0,1,0},   -speed, G.camera.pos), player_moved = MC_TRUE;
+                 if (glfwGetKey(G.window, GLFW_KEY_W)          == GLFW_PRESS) glm_vec3_muladds(G.camera.front,   speed, G.camera.pos), player_moved = MC_TRUE;
+            else if (glfwGetKey(G.window, GLFW_KEY_S)          == GLFW_PRESS) glm_vec3_muladds(G.camera.front,  -speed, G.camera.pos), player_moved = MC_TRUE;
+            
+            if (glfwGetKey(G.window, GLFW_KEY_TAB) == GLFW_PRESS)
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            else
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+            if (glfwGetKey(G.window, GLFW_KEY_L) == GLFW_PRESS)
+                mc_world_move(&G.world, 1, 0, 0);
+        }
+
+        /*
+         *
+         * Player
+         * 
+         */
+        {
+            if (player_moved || G.mouse.moved) {
+                glUseProgram(prog);
+                mc_camera_viewmatrix(&G.camera, view);
+                glUniformMatrix4fv(uView, 1, GL_FALSE, view);
+                if (player_moved)  player_moved  = MC_FALSE;
+                if (G.mouse.moved) G.mouse.moved = MC_FALSE;
+            }
+
+            if (!can_place_block)
+            if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE)
+                can_place_block = MC_TRUE;
+            if (!can_destroy_block)
+            if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE)
+                can_destroy_block = MC_TRUE;
+        }
+
+        /*
+         *
+         * Block
+         * 
+         */
+        struct mc_Block *block_hit = hit_block_in_reach();
+        {
+            if (block_hit != NULL) {
+                // mc_world_send_faces(&G.world, &indicator_block,
+                //     mc_block_coord(G.rayprehitpos[0]),
+                //     mc_block_coord(G.rayprehitpos[1]),
+                //     mc_block_coord(G.rayprehitpos[2]),
+                //     MC_INDICATOR_BLOCK_ALPHA,
+                //     MC_BLOCK_FACE_ALL
+                // );
+                reset_indicator_block = MC_TRUE;
+
+                if (can_place_block)
+                if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+                    // COMMENT
+                    int x = mc_block_coord(G.rayprehitpos[0]);
+                    int y = mc_block_coord(G.rayprehitpos[1]);
+                    int z = mc_block_coord(G.rayprehitpos[2]);
+                    mc_world_place_block_at(&G.world, x, y, z, MC_BLOCK_TYPE_GRASS);
+                    // mc_world_update(&G.world);
+                    can_place_block = MC_FALSE;
+                }
+                if (can_destroy_block)
+                if (glfwGetMouseButton(G.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+                    // COMMENT
+                    int x = mc_block_coord(G.rayhitpos[0]);
+                    int y = mc_block_coord(G.rayhitpos[1]);
+                    int z = mc_block_coord(G.rayhitpos[2]);
+                    // struct mc_Block * block = mc_world_block_at(&G.world, x, y, z);
+                    // if (block != NULL)
+                    //     mc_save_block(&G.world, x, y, z, block->type);
+                    mc_world_destroy_block_at(&G.world, x, y, z);
+                    // mc_world_update(&G.world);
+                    can_destroy_block = MC_FALSE;
+                } 
+
+            }
+            else if (reset_indicator_block) {
+                // mc_world_send_faces(&G.world, &indicator_block, 0, 0, 0, 0.0f, MC_BLOCK_FACE_ALL);
+                reset_indicator_block = MC_FALSE;
+            }
+        }
+
+        /*
+         *
+         * Setting up the text stack
+         * 
+         */
+        {
+            if (block_hit == NULL)
+                snprintf(G.txt.block, MC_TEXT_MAX_CHARS, "block hit           : NONE");
+            else
+                snprintf(G.txt.block, MC_TEXT_MAX_CHARS, "block hit           : %d, %d, %d", mc_block_coord(G.rayhitpos[0]), mc_block_coord(G.rayhitpos[1]), mc_block_coord(G.rayhitpos[2]));
+
+            unsigned long long mem_vertices      = G.world.face_indices_top * sizeof(float) / 1024 / 1024;
+            unsigned long long mem_blocks        = MC_WORLD_MAX_BLOCKS * sizeof(struct mc_Block) / 1024 / 1024;
+            unsigned long long mem_total         = mem_vertices + mem_blocks;
+
+            snprintf(G.txt.pos,               MC_TEXT_MAX_CHARS, "pos                 : %d, %d, %d",           mc_block_coord(G.camera.pos[0]), mc_block_coord(G.camera.pos[1]), mc_block_coord(G.camera.pos[2]));
+            snprintf(G.txt.look,              MC_TEXT_MAX_CHARS, "look                : %d, %d, %d",           G.camera.front[0] < 0 ? -1 : 1, G.camera.front[1] < 0 ? -1 : 1, G.camera.front[2] < 0 ? -1 : 1);
+            snprintf(G.txt.offset,            MC_TEXT_MAX_CHARS, "offset              : %d, %d, %d",           G.world.offset[0], G.world.offset[1], G.world.offset[2]);
+            snprintf(G.txt.vertices,          MC_TEXT_MAX_CHARS, "vertices            : %llu / %llu (%.1f%%)", G.world.face_indices_top / 7, MC_WORLD_MAX_VERTICES / 7, G.world.face_indices_top / (double)MC_WORLD_MAX_VERTICES * 100);
+            snprintf(G.txt.mem_vertices,      MC_TEXT_MAX_CHARS, "mem - vertices      : %llu MB (%.1f%%)",     mem_vertices, mem_vertices / (double)mem_total * 100);
+            snprintf(G.txt.mem_blocks,        MC_TEXT_MAX_CHARS, "mem - blocks        : %llu MB (%.1f%%)",     mem_blocks,   mem_blocks   / (double)mem_total * 100);
+            snprintf(G.txt.mem_total,         MC_TEXT_MAX_CHARS, "mem - total         : %llu MB",              mem_total);
         }
 
         /*
@@ -409,9 +432,10 @@ int main (void) {
             // World
             glUseProgram(prog);
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, block_texatlas_2darray);
-            mc_world_draw(&G.world, MC_BLOCK_VERTICES, G.world.blockvc - MC_BLOCK_VERTICES);
-            mc_world_draw(&G.world, 0, MC_BLOCK_VERTICES);
+            glBindTexture(GL_TEXTURE_2D, block_texatlas);
+            // mc_world_draw(&G.world, 1, (G.world.face_indices_top - MC_BLOCK_FACES) / MC_BLOCK_FACES);
+            // mc_world_draw(&G.world, 0, 1);
+            mc_world_draw(&G.world, 0, G.world.face_indices_top / MC_BLOCK_FACES);
 
             // Crosshair
             glUseProgram(G.ch.prog);
@@ -420,14 +444,22 @@ int main (void) {
             glBindVertexArray(G.ch.VAO);
             glDrawArrays(GL_TRIANGLES, 0, 6);
 
-            mc_textr_draw(&G.textr);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 0, G.txt.pos);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 1, G.txt.look);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 2, G.txt.block);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 3, G.txt.offset);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 4, G.txt.vertices);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 5, G.txt.mem_vertices);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 6, G.txt.mem_blocks);
+            mc_textr_draw(&G.textr, 0.0f, 1.0f - MC_TEXT_CHAR_HEIGHT * 7, G.txt.mem_total);
         }
 
 		glfwSwapBuffers(G.window);
 		glfwPollEvents();
 	}
 
-	mc_program_delete(&prog);
+    mc_world_free(&G.world);
+	mc_program_delete(prog);
 
 saferet:
 	glfwDestroyWindow(G.window);
